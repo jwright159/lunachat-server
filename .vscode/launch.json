@@ -5,20 +5,11 @@
 	"version": "0.2.0",
 	"configurations": [
 		{
-			"name": "Python: Flask",
+			"name": "Start server",
 			"type": "python",
 			"request": "launch",
-			"module": "flask",
-			"env": {
-				"FLASK_APP": "app.py",
-				"FLASK_DEBUG": "1"
-			},
-			"args": [
-				"run",
-				"--no-debugger",
-				"--no-reload"
-			],
-			"jinja": true,
+			"program": "${workspaceFolder}/app.py",
+			"console": "integratedTerminal",
 			"justMyCode": true
 		}
 	]
