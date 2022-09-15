@@ -9,6 +9,7 @@ from websockets.server import serve, WebSocketServerProtocol
 @dataclass
 class User:
 	username: str
+	color: str
 	websocket: WebSocketServerProtocol
 
 class Packet(ABC):
@@ -83,15 +84,18 @@ async def handler(websocket: WebSocketServerProtocol):
 					if user is None:
 						user = User(
 							username=data['username'],
+							color=data['color'],
 							websocket=websocket,
 						)
 						users.append(user)
 						await send(
 							sender_packets(user, 'loginSelf',
 								username=user.username,
+								color=user.color,
 							) +
 							all_but_sender_packets(user, 'login',
 								username=user.username,
+								color=user.color,
 							)
 						)
 					else:
@@ -103,6 +107,7 @@ async def handler(websocket: WebSocketServerProtocol):
 					else:
 						await send(all_packets('post',
 							username=user.username,
+							color=user.color,
 							text=data['text'],
 						))
 				
