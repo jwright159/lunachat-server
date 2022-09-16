@@ -9,10 +9,15 @@ Data = str | int | float | list['Data'] | dict[str, 'Data']
 
 class User:
 	def __init__(self, *, username: str, color: str, websocket: WebSocketServerProtocol):
-		self.id = uuid.uuid4().hex[:16]
+		self._generate_id()
+		while self.id in users:
+			self._generate_id()
 		self.username = username
 		self.color = color
 		self.websocket = websocket
+	
+	def _generate_id(self):
+		self.id = uuid.uuid4().hex[:16]
 	
 	def json(self) -> dict[str, Data]:
 		return {
