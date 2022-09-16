@@ -1,19 +1,31 @@
 from abc import ABC
 import abc
 import asyncio
-from dataclasses import dataclass
 import json
-from typing import Any
+import uuid
 from websockets.server import serve, WebSocketServerProtocol
 
-@dataclass
+Data = str | int | float | list['Data'] | dict[str, 'Data']
+
 class User:
-	username: str
-	color: str
-	websocket: WebSocketServerProtocol
+	def __init__(self, *, username: str, color: str, websocket: WebSocketServerProtocol):
+		self.id = uuid.uuid4().hex[:16]
+		self.username = username
+		self.color = color
+		self.websocket = websocket
+	
+	def json(self) -> dict[str, Data]:
+		return {
+			'id': self.id,
+			'username': self.username,
+			'color': self.color,
+		}
+	
+	def __str__(self):
+		return f"{self.username} ({self.id})"
 
 class Packet(ABC):
-	def __init__(self, type: str, **data: Any):
+	def __init__(self, type: str, data: dict[str, Data]):
 		self.data = data
 		self.data['type'] = type
 		self.sent = False
@@ -31,8 +43,8 @@ class Packet(ABC):
 		pass
 
 class UserPacket(Packet):
-	def __init__(self, user: User, type: str, **data: Any):
-		super().__init__(type, **data)
+	def __init__(self, user: User, type: str, data: dict[str, Data]):
+		super().__init__(type, data)
 		self.user = user
 
 	async def _send(self):
@@ -43,7 +55,7 @@ class UserPacket(Packet):
 
 class ErrorPacket(Packet):
 	def __init__(self, websocket: WebSocketServerProtocol, error: str):
-		super().__init__('error', error=error)
+		super().__init__('error', {'error': error})
 		self.websocket = websocket
 	
 	async def _send(self):
@@ -53,16 +65,16 @@ class ErrorPacket(Packet):
 		return f"{self.data['type']} to {self.websocket.host}"
 
 
-users: list[User] = []
+users: dict[str, User] = {}
 
-def sender_packets(sender: User, type: str, **data: Any) -> list[Packet]:
-	return [UserPacket(sender, type, **data)]
+def sender_packets(sender: User, type: str, data: dict[str, Data]) -> list[Packet]:
+	return [UserPacket(sender, type, data)]
 
-def all_packets(type: str, **data: Any) -> list[Packet]:
-	return [UserPacket(user, type, **data) for user in users]
+def all_packets(type: str, data: dict[str, Data]) -> list[Packet]:
+	return [UserPacket(user, type, data) for user in users.values()]
 
-def all_but_sender_packets(sender: User, type: str, **data: Any) -> list[Packet]:
-	return [UserPacket(user, type, **data) for user in users if user is not sender]
+def all_but_sender_packets(sender: User, type: str, data: dict[str, Data]) -> list[Packet]:
+	return [UserPacket(user, type, data) for user in users.values() if user is not sender]
 
 def error_packets(sender: WebSocketServerProtocol, error: str) -> list[Packet]:
 	return [ErrorPacket(sender, error)]
@@ -73,7 +85,7 @@ async def send(packets: list[Packet]):
 async def handler(websocket: WebSocketServerProtocol):
 	print(f"Connected to {websocket.host}")
 
-	user: User | None = None
+	sender: User | None = None
 
 	try:
 		async for message in websocket:
@@ -81,49 +93,49 @@ async def handler(websocket: WebSocketServerProtocol):
 
 			match data['type']:
 				case 'login':
-					if user is None:
-						user = User(
+					if sender is None:
+						sender = User(
 							username=data['username'],
 							color=data['color'],
 							websocket=websocket,
 						)
-						users.append(user)
+						users[sender.id] = sender
 						await send(
-							sender_packets(user, 'loginSelf',
-								username=user.username,
-								color=user.color,
-							) +
-							all_but_sender_packets(user, 'login',
-								username=user.username,
-								color=user.color,
-							)
+							sender_packets(sender, 'loginSelf', {
+								'me': sender.json(),
+								'users': [user.json() for user in users.values() if user is not sender],
+							}) +
+							all_but_sender_packets(sender, 'login', {
+								'user': sender.json()
+							})
 						)
 					else:
 						await send(error_packets(websocket, 'Already logged in'))
 				
 				case 'post':
-					if user is None:
+					if sender is None:
 						await send(error_packets(websocket, 'Not logged in'))
 					else:
-						await send(all_packets('post',
-							username=user.username,
-							color=user.color,
-							text=data['text'],
-						))
+						await send(all_packets('post', {
+							'user': sender.id,
+							'text': data['text'],
+						}))
 				
 				case _:
 					await send(error_packets(websocket, 'Invalid type of message'))
 	
 	finally:
-		if (user):
-			users.remove(user)
-		print(f"Disconected from {websocket.host}")
+		if (sender):
+			users.pop(sender.id)
+			print(f"Disconnected from {sender}")
+		else:
+			print(f"Disconected from {websocket.host}")
 
 loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 
 start_server = serve(handler, 'localhost', 8000)
 
-print("Starting")
+print("Server started")
 loop.run_until_complete(start_server)
 loop.run_forever()
