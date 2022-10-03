@@ -94,40 +94,44 @@ async def handler(websocket: WebSocketServerProtocol):
 
 	try:
 		async for message in websocket:
-			data = json.loads(message)
+			try:
+				data = json.loads(message)
 
-			match data['type']:
-				case 'login':
-					if sender is None:
-						sender = User(
-							username=data['username'],
-							color=data['color'],
-							websocket=websocket,
-						)
-						users[sender.id] = sender
-						await send(
-							sender_packets(sender, 'loginSelf', {
-								'me': sender.json(),
-								'users': [user.json() for user in users.values() if user is not sender],
-							}) +
-							all_but_sender_packets(sender, 'login', {
-								'user': sender.json()
-							})
-						)
-					else:
-						await send(error_packets(websocket, 'Already logged in'))
+				match data['type']:
+					case 'login':
+						if sender is None:
+							sender = User(
+								username=data['username'],
+								color=data['color'],
+								websocket=websocket,
+							)
+							users[sender.id] = sender
+							await send(
+								sender_packets(sender, 'loginSelf', {
+									'me': sender.json(),
+									'users': [user.json() for user in users.values() if user is not sender],
+								}) +
+								all_but_sender_packets(sender, 'login', {
+									'user': sender.json()
+								})
+							)
+						else:
+							await send(error_packets(websocket, "Already logged in"))
+					
+					case 'post':
+						if sender is None:
+							await send(error_packets(websocket, "Not logged in"))
+						else:
+							await send(all_packets('post', {
+								'user': sender.id,
+								'text': data['text'],
+							}))
+					
+					case _:
+						await send(error_packets(websocket, "Invalid type of message"))
 				
-				case 'post':
-					if sender is None:
-						await send(error_packets(websocket, 'Not logged in'))
-					else:
-						await send(all_packets('post', {
-							'user': sender.id,
-							'text': data['text'],
-						}))
-				
-				case _:
-					await send(error_packets(websocket, 'Invalid type of message'))
+			except Exception as e:
+				await send(error_packets(websocket, f"Error: {e}"))
 	
 	finally:
 		if (sender):
