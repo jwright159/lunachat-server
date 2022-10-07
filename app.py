@@ -3,13 +3,15 @@ import abc
 import asyncio
 from dataclasses import dataclass
 import json
+import os
+import ssl
 from types import TracebackType
-from typing import Any, Callable, ParamSpec
+from typing import Any, Callable
 import uuid
 from websockets.server import serve, WebSocketServerProtocol
 import bcrypt
-
-P = ParamSpec('P')
+from dotenv import load_dotenv #type: ignore
+load_dotenv()
 
 Data = str | int | float | list['Data'] | dict[str, 'Data']
 
@@ -223,8 +225,11 @@ def main():
 	loop = asyncio.new_event_loop()
 	asyncio.set_event_loop(loop)
 
+	ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+	ssl_context.load_cert_chain('cert.pem', 'key.pem', os.getenv('LUNACHAT_SSL_PW'))
+
 	app = App()
-	start_server = serve(app.websocket_handler, 'localhost', 8000)
+	start_server = serve(app.websocket_handler, 'localhost', 8000, ssl=ssl_context)
 
 	print("Server started")
 	loop.run_until_complete(start_server)
