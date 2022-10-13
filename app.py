@@ -1,7 +1,7 @@
 from abc import ABC
 import abc
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import os
 import ssl
@@ -10,6 +10,7 @@ from typing import Any, Callable
 import uuid
 from websockets.server import serve, WebSocketServerProtocol
 import bcrypt
+import sqlite3
 from dotenv import load_dotenv #type: ignore
 load_dotenv()
 
@@ -21,7 +22,7 @@ class User:
 	username: str
 	password: bytes
 	color: str
-	connections: list['WebsocketConnection']
+	connections: list['WebsocketConnection'] = field(default_factory=list)
 	
 	def json(self) -> dict[str, Data]:
 		return {
@@ -121,6 +122,12 @@ class WebsocketConnection:
 
 	def error_packets(self, error: str) -> list[Packet]:
 		return self.app.error_packets(self.websocket, error)
+	
+	def log_in_user(self, user: User):
+		assert self.sender is None
+		self.sender = user
+		user.connections.append(self)
+		self.app.connected_users[user.id] = user
 			
 Handler = Callable[[WebsocketConnection, Any], list[Packet]]
 
@@ -132,9 +139,18 @@ class App:
 		cls.handlers[handler.__name__] = handler
 		return handler
 	
-	def __init__(self):
-		self.users: dict[str, User] = {}
-		self.users_by_username: dict[str, User] = {}
+	def __init__(self, db: sqlite3.Connection):
+		self._db = db
+		self._db_cursor = db.cursor()
+		if self._db_cursor.execute("SELECT name FROM sqlite_master WHERE name='users'").fetchone() is None:
+			self._db_cursor.execute("""CREATE TABLE users(
+				id TEXT NOT NULL PRIMARY KEY,
+				username TEXT NOT NULL,
+				password TEXT NOT NULL,
+				color TEXT NOT NULL
+			)""")
+			self._db.commit()
+		self.connected_users: dict[str, User] = {}
 
 	async def websocket_handler(self, websocket: WebSocketServerProtocol):
 		with WebsocketConnection(self, websocket) as conn:
@@ -145,44 +161,70 @@ class App:
 		return [UserPacket(sender, type, data)]
 
 	def all_packets(self, type: str, data: dict[str, Data]) -> list[Packet]:
-		return [UserPacket(user, type, data) for user in self.users.values()]
+		return [UserPacket(user, type, data) for user in self.connected_users.values()]
 
 	def all_but_sender_packets(self, sender: User, type: str, data: dict[str, Data]) -> list[Packet]:
-		return [UserPacket(user, type, data) for user in self.users.values() if user is not sender]
+		return [UserPacket(user, type, data) for user in self.connected_users.values() if user is not sender]
 
 	def error_packets(self, sender: WebSocketServerProtocol, error: str) -> list[Packet]:
 		return [ErrorPacket(sender, error)]
 
-def generate_id():
-	return uuid.uuid4().hex[:16]
+	def _generate_id(self):
+		return uuid.uuid4().hex[:16]
+
+	def generate_valid_id(self):
+		user_id = self._generate_id()
+		while self.user_id_exists(user_id):
+			user_id = self._generate_id()
+		return user_id
+	
+	def user_id_exists(self, user_id: str):
+		return self._db_cursor.execute("SELECT id FROM users WHERE id=?", (user_id,)).fetchone() is not None
+	
+	def user_name_exists(self, username: str):
+		return self._db_cursor.execute("SELECT username FROM users WHERE username=?", (username,)).fetchone() is not None
+	
+	def insert_user(self, user: User):
+		self._db_cursor.execute("INSERT INTO users VALUES (?, ?, ?, ?)", (user.id, user.username, str(user.password, encoding='utf-8'), user.color))
+		self._db.commit()
+	
+	def select_user_by_name(self, username: str):
+		"""Users should not be stored outside of connected_users"""
+		res = self._db_cursor.execute("SELECT id, username, password, color FROM users WHERE username=?", (username,)).fetchone()
+		if res[0] in self.connected_users:
+			return self.connected_users[res[0]]
+		else:
+			return User(
+				id=res[0],
+				username=res[1],
+				password=bytes(res[2], encoding='utf-8'),
+				color=res[3],
+			)
+
 
 @App.handler
 def register(conn: WebsocketConnection, data: Any) -> list[Packet]:
 	if conn.sender is not None:
 		return conn.error_packets("Already logged in")
 	
-	if data['username'] in conn.app.users_by_username:
+	if conn.app.user_name_exists(data['username']):
 		return conn.error_packets("Username taken")
 	
-	user_id = generate_id()
-	while user_id in conn.app.users:
-		user_id = generate_id()
-	conn.sender = User(
-		id=user_id,
+	user = User(
+		id=conn.app.generate_valid_id(),
 		username=data['username'],
 		password=bcrypt.hashpw(bytes(data['password'], encoding='utf-8'), bcrypt.gensalt()),
 		color='#000000',
-		connections=[conn],
 	)
-	conn.app.users[conn.sender.id] = conn.sender
-	conn.app.users_by_username[conn.sender.username] = conn.sender
+	conn.app.insert_user(user)
+	conn.log_in_user(user)
 	return (
 		conn.sender_packets('loginSelf', {
-			'me': conn.sender.json(),
-			'users': [user.json() for user in conn.app.users.values() if user is not conn.sender],
+			'me': user.json(),
+			'users': [connected_user.json() for connected_user in conn.app.connected_users.values() if connected_user is not user],
 		}) +
 		conn.all_but_sender_packets('login', {
-			'user': conn.sender.json()
+			'user': user.json()
 		})
 	)
 
@@ -191,22 +233,21 @@ def login(conn: WebsocketConnection, data: Any) -> list[Packet]:
 	if conn.sender is not None:
 		return conn.error_packets("Already logged in")
 	
-	if data['username'] not in conn.app.users_by_username:
+	if not conn.app.user_name_exists(data['username']):
 		return conn.error_packets("No user with that username")
 
-	attempted_user: User = conn.app.users_by_username[data['username']]
-	if not bcrypt.checkpw(bytes(data['password'], encoding='utf-8'), attempted_user.password):
+	user: User = conn.app.select_user_by_name(data['username'])
+	if not bcrypt.checkpw(bytes(data['password'], encoding='utf-8'), user.password):
 		return conn.error_packets("Wrong password")
 
-	conn.sender = attempted_user
-	conn.sender.connections.append(conn)
+	conn.log_in_user(user)
 	return (
 		conn.sender_packets('loginSelf', {
-			'me': conn.sender.json(),
-			'users': [user.json() for user in conn.app.users.values() if user is not conn.sender],
+			'me': user.json(),
+			'users': [connected_user.json() for connected_user in conn.app.connected_users.values() if connected_user is not user],
 		}) +
 		conn.all_but_sender_packets('login', {
-			'user': conn.sender.json()
+			'user': user.json()
 		})
 	)
 
@@ -225,10 +266,12 @@ def main():
 	loop = asyncio.new_event_loop()
 	asyncio.set_event_loop(loop)
 
+	db = sqlite3.connect('lunachat.db')
+
 	ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 	ssl_context.load_cert_chain('cert.pem', 'key.pem', os.getenv('LUNACHAT_SSL_PW'))
 
-	app = App()
+	app = App(db)
 	start_server = serve(app.websocket_handler, 'localhost', 8000, ssl=ssl_context)
 
 	print("Server started")
