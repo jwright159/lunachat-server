@@ -76,7 +76,7 @@ class ErrorPacket(Packet):
 	def __str__(self):
 		return f"{self.data['type']} {self.data['error']} to {self.websocket.host}"
 		
-async def send(packets: list[Packet]):
+def send(packets: list[Packet]):
 	loop = asyncio.get_running_loop()
 	return [loop.create_task(packet.send()) for packet in packets]
 
@@ -98,16 +98,16 @@ class WebsocketConnection:
 			host = str(self.websocket.host)
 		print(f"Disconected from {host} with {exc_value}")
 	
-	async def handle_message(self, message: str | bytes):
+	def handle_message(self, message: str | bytes):
 		try:
 			data = json.loads(message)
 			if data['type'] in self.app.handlers:
 				handler = self.app.handlers[data['type']]
-				await send(handler(self, data))
+				send(handler(self, data))
 			else:
-				await send(self.error_packets("Invalid type of message"))
+				send(self.error_packets("Invalid type of message"))
 		except Exception as e:
-			await send(self.error_packets(f"Internal error: {e}"))
+			send(self.error_packets(f"Internal error: {e}"))
 	
 	def sender_packets(self, type: str, data: dict[str, Data]) -> list[Packet]:
 		assert self.sender
@@ -155,7 +155,7 @@ class App:
 	async def websocket_handler(self, websocket: WebSocketServerProtocol):
 		with WebsocketConnection(self, websocket) as conn:
 			async for message in websocket:
-				await conn.handle_message(message) # should i have a try here?
+				conn.handle_message(message) # should i have a try here?
 		
 	def sender_packets(self, sender: User, type: str, data: dict[str, Data]) -> list[Packet]:
 		return [UserPacket(sender, type, data)]
