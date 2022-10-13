@@ -89,6 +89,9 @@ class WebsocketConnection:
 	def __exit__(self, exc_type: type[BaseException] | None, exc_value: BaseException | None, traceback: TracebackType | None):
 		if self.sender:
 			self.sender.connections.remove(self)
+			if len(self.sender.connections) == 0:
+				self.logout()
+
 			host = str(self.sender)
 		else:
 			host = str(self.websocket.host)
@@ -119,11 +122,18 @@ class WebsocketConnection:
 	def error_packets(self, error: str) -> list[Packet]:
 		return self.app.error_packets(self.websocket, error)
 	
-	def log_in_user(self, user: User):
+	def log_in_as_user(self, user: User):
 		assert self.sender is None
 		self.sender = user
 		user.connections.append(self)
 		self.app.connected_users[user.id] = user
+	
+	def logout(self):
+		assert self.sender
+		self.send(self.all_but_sender_packets('logout', {
+			'user': self.sender.id,
+		}))
+		self.app.connected_users.pop(self.sender.id)
 	
 	def send(self, packets: list[Packet]):
 		loop = asyncio.get_running_loop()
@@ -217,7 +227,7 @@ def register(conn: WebsocketConnection, data: Any) -> list[Packet]:
 		color='#000000',
 	)
 	conn.app.insert_user(user)
-	conn.log_in_user(user)
+	conn.log_in_as_user(user)
 	return (
 		conn.sender_packets('loginSelf', {
 			'me': user.json(),
@@ -240,7 +250,7 @@ def login(conn: WebsocketConnection, data: Any) -> list[Packet]:
 	if not bcrypt.checkpw(bytes(data['password'], encoding='utf-8'), user.password):
 		return conn.error_packets("Wrong password")
 
-	conn.log_in_user(user)
+	conn.log_in_as_user(user)
 	return (
 		conn.sender_packets('loginSelf', {
 			'me': user.json(),
