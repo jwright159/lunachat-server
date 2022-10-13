@@ -75,10 +75,6 @@ class ErrorPacket(Packet):
 	
 	def __str__(self):
 		return f"{self.data['type']} {self.data['error']} to {self.websocket.host}"
-		
-def send(packets: list[Packet]):
-	loop = asyncio.get_running_loop()
-	return [loop.create_task(packet.send()) for packet in packets]
 
 class WebsocketConnection:
 	def __init__(self, app: 'App', websocket: WebSocketServerProtocol):
@@ -103,11 +99,11 @@ class WebsocketConnection:
 			data = json.loads(message)
 			if data['type'] in self.app.handlers:
 				handler = self.app.handlers[data['type']]
-				send(handler(self, data))
+				self.send(handler(self, data))
 			else:
-				send(self.error_packets("Invalid type of message"))
+				self.send(self.error_packets("Invalid type of message"))
 		except Exception as e:
-			send(self.error_packets(f"Internal error: {e}"))
+			self.send(self.error_packets(f"Internal error: {e}"))
 	
 	def sender_packets(self, type: str, data: dict[str, Data]) -> list[Packet]:
 		assert self.sender
@@ -128,6 +124,10 @@ class WebsocketConnection:
 		self.sender = user
 		user.connections.append(self)
 		self.app.connected_users[user.id] = user
+	
+	def send(self, packets: list[Packet]):
+		loop = asyncio.get_running_loop()
+		return [loop.create_task(packet.send()) for packet in packets]
 			
 Handler = Callable[[WebsocketConnection, Any], list[Packet]]
 
