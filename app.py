@@ -1,15 +1,12 @@
 import asyncio
 import json
-import os
-import ssl
 from types import TracebackType
 from typing import Any, Callable
 import uuid
-from websockets.server import serve, WebSocketServerProtocol
-import sqlite3
-from dotenv import load_dotenv # type: ignore
+from websockets.server import WebSocketServerProtocol
 
 from .db import DB, DBSpec
+from .lang import *
 from .network import Data, ErrorPacket, Packet, UserPacket
 from .types import Guild, GuildID, User, UserID
 
@@ -42,9 +39,9 @@ class WebsocketConnection:
 				handler = self.app.handlers[data['type']]
 				self.send(handler(self, data))
 			else:
-				self.send(self.error_packets("Invalid type of message"))
+				self.send(self.error_packets(INVALID_MESSAGE_TYPE))
 		except Exception as e:
-			self.send(self.error_packets(f"Internal error: {e}"))
+			self.send(self.error_packets(f"{INTERNAL_ERROR}: {e}"))
 
 	def make_packets(self, type: str, data: dict[str, Data], *, include_sender: bool = True, include_others_in: list[GuildID] | GuildID | None = None):
 		assert self.sender
@@ -118,27 +115,3 @@ class App:
 		while self.user_spec.entry_exists('id', user_id):
 			user_id = self.__generate_id()
 		return user_id
-
-
-def main():
-	import .packets
-	
-	load_dotenv()
-
-	loop = asyncio.new_event_loop()
-	asyncio.set_event_loop(loop)
-
-	db = DB(sqlite3.connect('lunachat.db'))
-
-	ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-	ssl_context.load_cert_chain('cert.pem', 'key.pem', os.getenv('LUNACHAT_SSL_PW'))
-
-	app = App(db)
-	start_server = serve(app.websocket_handler, 'localhost', 8000, ssl=ssl_context)
-
-	print("Server started")
-	loop.run_until_complete(start_server)
-	loop.run_forever()
-
-if __name__ == '__main__':
-	main()

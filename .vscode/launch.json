@@ -8,7 +8,7 @@
 			"name": "Start server",
 			"type": "python",
 			"request": "launch",
-			"program": "${workspaceFolder}/app.py",
+			"program": "${workspaceFolder}/main.py",
 			"console": "integratedTerminal",
 			"justMyCode": true
 		}
