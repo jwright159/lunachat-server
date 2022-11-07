@@ -2,32 +2,37 @@ import asyncio
 import json
 from types import TracebackType
 from typing import Any, Callable
-import uuid
 from websockets.server import WebSocketServerProtocol
 
 from .db import DB, DBSpec
 from .lang import *
-from .network import Data, ErrorPacket, Packet, UserPacket
+from .network import Data, ErrorPacket, Packet, UserPacket, WebsocketPacket
 from .types import Guild, GuildID, User, UserID
 
+
+class UserConnections:
+	def __init__(self, user: User) -> None:
+		self.user = user
+		self.websockets: list['WebsocketConnection'] = []
 
 class WebsocketConnection:
 	def __init__(self, app: 'App', websocket: WebSocketServerProtocol):
 		self.app = app
 		self.websocket = websocket
-		self.sender: User | None = None
+		self.__connections: UserConnections | None = None
+	
+	@property
+	def sender(self):
+		return self.__connections.user if self.__connections else None
 
 	def __enter__(self):
 		print(f"Connected to {self.websocket.host}")
 		return self
 
 	def __exit__(self, exc_type: type[BaseException] | None, exc_value: BaseException | None, traceback: TracebackType | None):
-		if self.sender:
-			self.sender.connections.remove(self)
-			if len(self.sender.connections) == 0:
-				self.logout()
-
+		if self.__connections:
 			host = str(self.sender)
+			self.log_out()
 		else:
 			host = str(self.websocket.host)
 		print(f"Disconected from {host} with {exc_value}")
@@ -43,25 +48,34 @@ class WebsocketConnection:
 		except Exception as e:
 			self.send(self.error_packets(f"{INTERNAL_ERROR}: {e}"))
 
-	def make_packets(self, type: str, data: dict[str, Data], *, include_sender: bool = True, include_others_in: list[GuildID] | GuildID | None = None):
-		assert self.sender
-		return self.app.make_packets(self.sender, type, data, include_sender=include_sender, include_others_in=include_others_in)
+	def make_packets(self, type: str, data: dict[str, Data], *, include_sender: bool = True, include_others_in: list[GuildID] | GuildID | None = None) -> list[Packet]:
+		assert self.__connections
+		return self.app.make_packets(self.__connections, type, data, include_sender=include_sender, include_others_in=include_others_in)
+	
+	def websocket_packets(self, type: str, data: dict[str, Data]) -> list[Packet]:
+		return [WebsocketPacket(self.websocket, type, data)]
 
 	def error_packets(self, error: str) -> list[Packet]:
-		return self.app.error_packets(self.websocket, error)
+		return [ErrorPacket(self.websocket, error)]
 	
-	def log_in_as_user(self, user: User):
-		assert self.sender is None
-		self.sender = user
-		user.connections.append(self)
-		self.app.connected_users[user.id] = user
+	def log_in(self, user: User):
+		assert self.__connections is None
+		if user.id in self.app.connected_users:
+			self.__connections = self.app.connected_users[user.id]
+		else:
+			self.__connections = UserConnections(user)
+			self.app.connected_users[user.id] = self.__connections
+		self.__connections.websockets.append(self)
 	
-	def logout(self):
-		assert self.sender
-		self.send(self.make_packets('logout', {
-			'user': self.sender.id,
-		}, include_sender=False, include_others_in=self.sender.guilds))
-		self.app.connected_users.pop(self.sender.id)
+	def log_out(self):
+		assert self.__connections
+		self.__connections.websockets.remove(self)
+		if not self.__connections.websockets:
+			self.send(self.make_packets('logout', {
+				'user': self.__connections.user.id,
+			}, include_sender=False, include_others_in=self.__connections.user.guilds))
+			self.app.connected_users.pop(self.__connections.user.id)
+			self.__connections = None
 	
 	def send(self, packets: list[Packet]):
 		loop = asyncio.get_running_loop()
@@ -81,7 +95,7 @@ class App:
 		self.__db = db
 		self.user_spec = DBSpec[User]('users', self.__db, User.spec())
 		self.guild_spec = DBSpec[Guild]('guilds', self.__db, Guild.spec())
-		self.connected_users: dict[str, User] = {}
+		self.connected_users: dict[UserID, UserConnections] = {}
 		self.guilds: dict[str, Guild] = {}
 	
 	async def websocket_handler(self, websocket: WebSocketServerProtocol):
@@ -89,10 +103,10 @@ class App:
 			async for message in websocket:
 				conn.handle_message(message) # should i have a try here?
 	
-	def make_packets(self, sender: User, type: str, data: dict[str, Data], *, include_sender: bool = True, include_others_in: list[GuildID] | GuildID | None = None):
+	def make_packets(self, connections: UserConnections, type: str, data: dict[str, Data], *, include_sender: bool = True, include_others_in: list[GuildID] | GuildID | None = None):
 		packets: list[Packet] = []
 		if include_sender:
-			packets += [UserPacket(sender, type, data)]
+			packets += [UserPacket(connections, type, data)]
 		match include_others_in:
 			case list():
 				guilds = [self.guild_spec.select('id', guild) for guild in include_others_in]
@@ -101,17 +115,5 @@ class App:
 			case None:
 				guilds = []
 		user_ids = set(user_id for guild in guilds if guild is not None for user_id in guild.users)
-		packets += [UserPacket(self.connected_users[user_id], type, data) for user_id in user_ids if user_id is not sender and user_id in self.connected_users]
+		packets += [UserPacket(self.connected_users[user_id], type, data) for user_id in user_ids if user_id is not connections.user.id and user_id in self.connected_users]
 		return packets
-
-	def error_packets(self, sender: WebSocketServerProtocol, error: str) -> list[Packet]:
-		return [ErrorPacket(sender, error)]
-
-	def __generate_id(self) -> UserID:
-		return UserID(uuid.uuid4().hex[:16])
-
-	def generate_user_id(self) -> UserID:
-		user_id = self.__generate_id()
-		while self.user_spec.entry_exists('id', user_id):
-			user_id = self.__generate_id()
-		return user_id

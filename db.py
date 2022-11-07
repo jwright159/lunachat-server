@@ -1,6 +1,7 @@
 from sqlite3 import Connection
 from sqlite3.dbapi2 import _Parameters # type: ignore
 from typing import Generic, TypeVar
+import uuid
 
 from .types import Spec, UniqueObject
 
@@ -89,3 +90,13 @@ class DBSpec(Generic[UNIQUE]):
 	
 	def __create_spec_value_params(self, obj: UNIQUE):
 		return dict((key, getattr(obj, key)) for key in self.__spec)
+	
+	@classmethod
+	def generate_generic_id(cls) -> str:
+		return uuid.uuid4().hex[:16]
+
+	def generate_unique_id(self) -> str:
+		obj_id = self.generate_generic_id()
+		while self.entry_exists('id', obj_id):
+			obj_id = self.generate_generic_id()
+		return obj_id

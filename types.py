@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from typing import Mapping, NewType, Sequence, cast
 
 from .app import WebsocketConnection
+from .db import DBSpec
 
 
 GuildID = NewType('GuildID', str)
@@ -74,6 +75,12 @@ class Guild(UniqueObject):
 	id: GuildID
 	channels: list[ChannelID]
 	users: list[UserID]
+
+	def generate_channel_id(self) -> ChannelID:
+		obj_id = DBSpec.generate_generic_id()
+		while obj_id in self.channels:
+			obj_id = DBSpec.generate_generic_id()
+		return ChannelID(obj_id)
 	
 	@classmethod
 	def json_spec(cls) -> Spec:

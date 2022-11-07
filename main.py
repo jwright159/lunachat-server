@@ -5,7 +5,7 @@ import ssl
 import sqlite3
 from websockets.server import serve
 
-from . import packets # type: ignore
+from . import handlers # type: ignore
 from .app import App
 from .db import DB
 
